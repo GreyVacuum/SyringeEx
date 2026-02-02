@@ -26,6 +26,7 @@ class SyringeDebugger
     static constexpr BYTE NOP = 0x90;
 
     static constexpr std::string_view INCLUDE_FLAG = "-i=";
+    static constexpr std::string_view EXCLUDE_FLAG = "-x=";
     static constexpr std::string_view NODETACH_FLAG = "--nodetach";
     static constexpr std::string_view NOWAIT_FLAG = "--nowait";
     static constexpr std::string_view HANDSHAKES_FLAG = "--handshakes";
@@ -42,6 +43,10 @@ public:
             if (auto const pos = flagView.find(INCLUDE_FLAG); pos != std::string_view::npos)
             {
                 dlls.emplace_back(flagView.begin() + pos + INCLUDE_FLAG.size(), flagView.end());
+            }
+            else if (auto const pos = flagView.find(EXCLUDE_FLAG); pos != std::string_view::npos)
+            {
+                excludes.emplace_back(flagView.begin() + pos + EXCLUDE_FLAG.size(), flagView.end());
             }
             else if (auto const pos = flagView.find(NODETACH_FLAG); pos != std::string_view::npos)
             {
@@ -146,6 +151,7 @@ private:
     // syringe
     std::string exe;
     std::vector<std::string> dlls{};
+    std::vector<std::string> excludes{};
     void* pcEntryPoint{ nullptr };
     void* pImLoadLibrary{ nullptr };
     void* pImGetProcAddress{ nullptr };

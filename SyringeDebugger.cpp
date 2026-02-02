@@ -11,10 +11,42 @@
 #include <fstream>
 #include <memory>
 #include <numeric>
+#include <cctype>
 
 #include <DbgHelp.h>
 
 using namespace std;
+
+namespace {
+    static bool WildcardMatchCI(std::string_view name, std::string_view pattern)
+    {
+        auto toLower = [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); };
+
+        size_t s = 0, p = 0;
+        size_t star = std::string_view::npos;
+        size_t ss = 0;
+
+        while (s < name.size()) {
+            if (p < pattern.size() && (pattern[p] == '?' || toLower(pattern[p]) == toLower(name[s]))) {
+                ++s; ++p;
+            }
+            else if (p < pattern.size() && pattern[p] == '*') {
+                star = p++;
+                ss = s;
+            }
+            else if (star != std::string_view::npos) {
+                p = star + 1;
+                s = ++ss;
+            }
+            else {
+                return false;
+            }
+        }
+
+        while (p < pattern.size() && pattern[p] == '*') ++p;
+        return p == pattern.size();
+    }
+}
 
 void SyringeDebugger::DebugProcess(std::string_view const arguments)
 {
@@ -710,6 +742,20 @@ void SyringeDebugger::FindDLLs()
         for (auto file = FindFile(dll.c_str()); file; ++file)
         {
             std::string_view const fn(file->cFileName);
+
+            // check excludes first (pattern match, case-insensitive)
+            bool skip = false;
+            for (auto const& ex : excludes)
+            {
+                if (WildcardMatchCI(fn, ex))
+                {
+                    Log::WriteLine(__FUNCTION__ ": Skipping excluded DLL \"%.*s\" (pattern \"%s\")", printable(fn), ex.c_str());
+                    skip = true;
+                    break;
+                }
+            }
+            if (skip)
+                continue;
 
             // Log::WriteLine(
             //	__FUNCTION__ ": Potential DLL: \"%.*s\"", printable(fn));

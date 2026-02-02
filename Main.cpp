@@ -30,7 +30,7 @@ std::vector<std::string> GetArguments()
 
 int Run(const std::vector<std::string>& arguments)
 {
-    constexpr auto const VersionString = "SyringeEx " SYRINGEEX_VER_TEXT ", based on Syringe 0.7.2.0";
+    constexpr auto const VersionString = "注入器 (扩展)";
 
     InitCommonControls();
 
@@ -82,10 +82,27 @@ int Run(const std::vector<std::string>& arguments)
     }
     catch (invalid_command_arguments const&)
     {
-        MessageBoxA(
-            nullptr, "Syringe cannot be run like that.\n\n"
-            "Usage:\nSyringe.exe <exe name> [-i=<injectedfile.dll> ...] [--args=\"<arguments>\"]",
-            VersionString, MB_OK | MB_ICONINFORMATION);
+#define MSG_BOX_INFO MB_OK | MB_ICONINFORMATION
+        const char* szUsageInfo =
+            "-----用法说明-----\n"
+            "\n"
+            "注入举例:\n"
+            "<Syringe> <gamemd.exe> --args= -CD -i=Ares.dll -i=Phobos.dll\n\n"
+            "用法说明:\n"
+            "[Syringe (注入器名称)]\n"
+            "[game (被注入程序的名称.exe)]\n"
+            "[--args=\"<命令行参数列表>\"]\n"
+            "[-i=<指定注入文件.dll> ...]\n"
+            "[-X=<不指定注入文件.dll> ...]\n"
+            "[--nodetach (在注入后保持调试器连接状态，而不是自动断开。)]\n"
+            "[--nowait (导致注射器在断开连接后立即弹出，而不会等待目标进程结束。)]\n"
+            "[--handshakes (DLL加载时的握手验证，而不是跳过DLL的握手验证。)]\n\n"
+            "*注:\n"
+            "1.注入器名称  *可不包含后缀名。\n"
+            "2.被注入程序的名称  *必须有后缀名。\n"
+            "3.-i与-X  *均写多的指定的文件。\n";
+            
+        MessageBoxA(nullptr, szUsageInfo, VersionString, MSG_BOX_INFO);
 
         Log::WriteLine(
             "WinMain: Invalid command line arguments given, exiting...");
