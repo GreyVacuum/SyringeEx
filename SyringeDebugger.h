@@ -27,6 +27,8 @@ class SyringeDebugger
 
     static constexpr std::string_view INCLUDE_FLAG = "-i=";
     static constexpr std::string_view EXCLUDE_FLAG = "-x=";
+    static constexpr std::string_view PATHLNJECT_FLAG = "-pathlnject=";
+    static constexpr std::string_view NOROOTLNJECT_FLAG = "--norootlnject";
     static constexpr std::string_view NODETACH_FLAG = "--nodetach";
     static constexpr std::string_view NOWAIT_FLAG = "--nowait";
     static constexpr std::string_view HANDSHAKES_FLAG = "--handshakes";
@@ -39,14 +41,32 @@ public:
         {
             std::string_view const flagView = flag;
 
+            auto strip_quotes = [](std::string_view sv) -> std::string_view {
+                if (sv.size() >= 2 && ((sv.front() == '"' && sv.back() == '"') || (sv.front() == '\'' && sv.back() == '\'')))
+                {
+                    return sv.substr(1, sv.size() - 2);
+                }
+                return sv;
+            };
+
             // parse all -i=filename_to_inject from flags
             if (auto const pos = flagView.find(INCLUDE_FLAG); pos != std::string_view::npos)
             {
-                dlls.emplace_back(flagView.begin() + pos + INCLUDE_FLAG.size(), flagView.end());
+                auto sv = std::string_view(flagView.begin() + pos + INCLUDE_FLAG.size(), flagView.end());
+                sv = strip_quotes(sv);
+                dlls.emplace_back(sv.begin(), sv.end());
             }
             else if (auto const pos = flagView.find(EXCLUDE_FLAG); pos != std::string_view::npos)
             {
-                excludes.emplace_back(flagView.begin() + pos + EXCLUDE_FLAG.size(), flagView.end());
+                auto sv = std::string_view(flagView.begin() + pos + EXCLUDE_FLAG.size(), flagView.end());
+                sv = strip_quotes(sv);
+                excludes.emplace_back(sv.begin(), sv.end());
+            }
+            else if (auto const pos = flagView.find(PATHLNJECT_FLAG); pos != std::string_view::npos)
+            {
+                auto sv = std::string_view(flagView.begin() + pos + PATHLNJECT_FLAG.size(), flagView.end());
+                sv = strip_quotes(sv);
+                pathlnjects.emplace_back(sv.begin(), sv.end());
             }
             else if (auto const pos = flagView.find(NODETACH_FLAG); pos != std::string_view::npos)
             {
@@ -59,6 +79,10 @@ public:
             else if (auto const pos = flagView.find(HANDSHAKES_FLAG); pos != std::string_view::npos)
             {
                 bHandshakes = true;
+            }
+            else if (auto const pos = flagView.find(NOROOTLNJECT_FLAG); pos != std::string_view::npos)
+            {
+                bNoRootInject = true;
             }
             else
             {
@@ -152,6 +176,7 @@ private:
     std::string exe;
     std::vector<std::string> dlls{};
     std::vector<std::string> excludes{};
+    std::vector<std::string> pathlnjects{};
     void* pcEntryPoint{ nullptr };
     void* pImLoadLibrary{ nullptr };
     void* pImGetProcAddress{ nullptr };
@@ -163,6 +188,7 @@ private:
     bool bDetachWhenDone{ true };
     bool bWaitForProcessEnd{ true };
     bool bHandshakes{ false };
+    bool bNoRootInject{ false };
 
     bool bDLLsLoaded{ false };
     bool bHooksCreated{ false };

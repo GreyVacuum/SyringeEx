@@ -735,81 +735,123 @@ void SyringeDebugger::FindDLLs()
 {
     Breakpoints.clear();
 
+    // determine executable directory
+    std::string exeDir;
+    if (!exe.empty())
+    {
+        auto pos = exe.find_last_of("\\/");
+        if (pos != std::string::npos)
+            exeDir = exe.substr(0, pos);
+        else
+            exeDir = ".";
+    }
+
     for (const auto& dll : dlls)
     {
         Log::WriteLine(__FUNCTION__ ": Searching for DLLs matching \"%s\"...", dll.c_str());
 
-        for (auto file = FindFile(dll.c_str()); file; ++file)
-        {
-            std::string_view const fn(file->cFileName);
+        // build search patterns: combine -pathlnject dirs with the dll pattern
+        std::vector<std::string> searchPatterns;
 
-            // check excludes first (pattern match, case-insensitive)
-            bool skip = false;
-            for (auto const& ex : excludes)
-            {
-                if (WildcardMatchCI(fn, ex))
-                {
-                    Log::WriteLine(__FUNCTION__ ": Skipping excluded DLL \"%.*s\" (pattern \"%s\")", printable(fn), ex.c_str());
-                    skip = true;
-                    break;
-                }
-            }
-            if (skip)
+        for (auto const& p : pathlnjects)
+        {
+            if (p.empty())
                 continue;
 
-            // Log::WriteLine(
-            //	__FUNCTION__ ": Potential DLL: \"%.*s\"", printable(fn));
+            std::string pattern = p;
+            if (pattern.back() != '\\' && pattern.back() != '/')
+                pattern += '\\';
+            pattern += dll;
+            searchPatterns.push_back(std::move(pattern));
+        }
 
-            try
+        // unless disabled, also search the executable directory
+        if (!bNoRootInject && !exeDir.empty())
+        {
+            std::string pattern = exeDir;
+            if (pattern.back() != '\\' && pattern.back() != '/')
+                pattern += '\\';
+            pattern += dll;
+            searchPatterns.push_back(std::move(pattern));
+        }
+
+        // fallback to the raw pattern (relative to current working directory)
+        if (searchPatterns.empty())
+            searchPatterns.push_back(dll);
+
+        for (auto const& pattern : searchPatterns)
+        {
+            // extract directory part (if any) to build full paths
+            std::string dir;
+            auto pos = pattern.find_last_of("\\/");
+            if (pos != std::string::npos)
+                dir = pattern.substr(0, pos);
+
+            for (auto file = FindFile(pattern.c_str()); file; ++file)
             {
-                PortableExecutable const DLL{ fn };
-                HookBuffer buffer;
+                std::string filename(file->cFileName);
+                std::string fullPath = dir.empty() ? filename : dir + "\\" + filename;
 
-                auto canLoad = false;
-                if (auto const hooks = DLL.FindSection(".syhks00"))
+                // check excludes (match filename or full path)
+                bool skip = false;
+                for (auto const& ex : excludes)
                 {
-                    canLoad = ParseHooksSection(DLL, *hooks, buffer);
-                }
-                else
-                {
-                    canLoad = ParseInjFileHooks(fn, buffer);
-                }
-
-                if (canLoad)
-                {
-                    Log::WriteLine(__FUNCTION__ ": Recognized DLL: \"%.*s\"", printable(fn));
-
-                    if (auto const res = Handshake(DLL.GetFilename(), static_cast<int>(buffer.count), buffer.checksum.value()))
+                    if (WildcardMatchCI(filename, ex) || WildcardMatchCI(fullPath, ex))
                     {
-                        canLoad = *res;
-                    }
-                    else if (auto const hosts = DLL.FindSection(".syexe00"))
-                    {
-                        canLoad = CanHostDLL(DLL, *hosts);
+                        Log::WriteLine(__FUNCTION__ ": Skipping excluded DLL \"%s\" (pattern \"%s\")", fullPath.c_str(), ex.c_str());
+                        skip = true;
+                        break;
                     }
                 }
+                if (skip)
+                    continue;
 
-                if (canLoad)
+                try
                 {
-                    for (auto const& it : buffer.hooks)
+                    PortableExecutable const DLL{ fullPath };
+                    HookBuffer buffer;
+
+                    bool canLoad = false;
+                    if (auto const hooks = DLL.FindSection(".syhks00"))
                     {
-                        auto const eip = it.first;
-                        auto& h = Breakpoints[eip];
-                        h.p_caller_code.clear();
-                        h.original_opcode = 0x00;
-                        h.hooks.insert(
-                            h.hooks.end(), it.second.begin(), it.second.end());
+                        canLoad = ParseHooksSection(DLL, *hooks, buffer);
+                    }
+                    else
+                    {
+                        canLoad = ParseInjFileHooks(fullPath, buffer);
+                    }
+
+                    if (canLoad)
+                    {
+                        Log::WriteLine(__FUNCTION__ ": Recognized DLL: \"%s\"", fullPath.c_str());
+
+                        if (auto const res = Handshake(DLL.GetFilename(), static_cast<int>(buffer.count), buffer.checksum.value()))
+                        {
+                            canLoad = *res;
+                        }
+                        else if (auto const hosts = DLL.FindSection(".syexe00"))
+                        {
+                            canLoad = CanHostDLL(DLL, *hosts);
+                        }
+                    }
+
+                    if (canLoad)
+                    {
+                        for (auto const& it : buffer.hooks)
+                        {
+                            auto const eip = it.first;
+                            auto& h = Breakpoints[eip];
+                            h.p_caller_code.clear();
+                            h.original_opcode = 0x00;
+                            h.hooks.insert(h.hooks.end(), it.second.begin(), it.second.end());
+                        }
+                    }
+                    else if (!buffer.hooks.empty())
+                    {
+                        Log::WriteLine(__FUNCTION__ ": DLL load was prevented: \"%s\"", fullPath.c_str());
                     }
                 }
-                else if (!buffer.hooks.empty())
-                {
-                    Log::WriteLine(__FUNCTION__ ": DLL load was prevented: \"%.*s\"", printable(fn));
-                }
-            }
-            catch (...)
-            {
-                // Log::WriteLine(
-                //	__FUNCTION__ ": DLL Parse failed: \"%.*s\"", printable(fn));
+                catch (...) { }
             }
         }
     }
@@ -817,12 +859,8 @@ void SyringeDebugger::FindDLLs()
     // summarize all hooks
     v_AllHooks.clear();
     for (auto& it : Breakpoints)
-    {
         for (auto& i : it.second.hooks)
-        {
             v_AllHooks.push_back(&i);
-        }
-    }
 
     Log::WriteLine(__FUNCTION__ ": Done (%d hooks added).", v_AllHooks.size());
     Log::WriteLine();
