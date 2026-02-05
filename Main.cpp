@@ -90,7 +90,7 @@ int Run(const std::vector<std::string>& arguments)
             MB_YESNO | MB_ICONQUESTION) == IDYES)
         {
             ShellExecuteA(nullptr, "open",
-                "https://github.com/GreyVacuum/SyringeEx/releases/tag/PersonalSupport",
+                "https://github.com/GreyVacuum/SyringeEx/tags",
                 nullptr, nullptr, SW_SHOWNORMAL);
 
             Log::WriteLine("WinMain: User chose to open releases page, exiting.");
