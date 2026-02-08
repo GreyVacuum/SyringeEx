@@ -99,8 +99,9 @@ int Run(const std::vector<std::string>& arguments)
 
 #define MSG_BOX_INFO MB_OK | MB_ICONINFORMATION
         const char* szUsageInfo =
+            "\n\n"
             "SyringeEX 魔改版\n"
-            "更新日期：2026/02/05  \n"
+            "更新日期：2026/02/08  \n"
             "当前版本： " SYRINGEEX_VER_TEXT " \n"
             "\n"
             "-----用法说明-----\n"
@@ -113,26 +114,36 @@ int Run(const std::vector<std::string>& arguments)
             "[game  (被注入程序的名称.exe)]\n"
             "\n"
             "[--args=\"<命令行参数列表>\"]\n"
-            "[-i=<指定注入文件.dll> ...  (全部dll不在执行，并以你设置的指定读取。)]\n"
-            "[-x=<不指定注入文件.dll> ...  (全部dll会排除你指定的dll不读取。)]\n"
-            "[-pathlnject=<指定路径文件夹> ...  (根据你的路径进行读取，同时不影响目录根的读取。)]\n"
+            "[-i=\"<指定注入文件.dll>\" ...  (全部dll不在执行，并以你设置的指定读取。)]\n"
+            "[-x=\"<不指定注入文件.dll>\" ...  (全部dll会排除你指定的dll不读取。)]\n"
+            "[-pathlnject=\"<指定路径文件夹>\" ...  (根据你的路径进行读取，同时不影响目录根的读取。)]\n"
             "\n"
-            "-提醒- >  -i与-x以及-pathlnject  (可写更多个这样的参数)\n"
+            "使用注意项目：\n"
+            "1. 注入器与被注入程序\n"
+            "请确保与游戏目录根下文件一致\n"
+            "注入器      *名称可不包含后缀名\n"
+            "被注入程序  *名称必须有后缀名exe\n"
+            "2. --args\n"
+            "            *必须有引号才可以生效\"内容\"\n"
+            "            *--args.<任意字数串>= 允许写很多个这些参数分类\n"
+            "            *如直接设置--args 则覆盖分类功能\n"
+            "3. -i与-x以及-pathlnject\n"
+            "            *允许写很多个这些参数\n"
+            "            *允许写成路径式\n"
+            "            *如-i设置 预期不会有目录根与指定文件夹作为全局共同读取\n"
             "\n"
             "[--norootlnject  (禁用目录根读取dll，而不是一直允许读取。)]\n"
             "[--nodetach  (在注入后保持调试器连接状态，而不是自动断开。)]\n"
             "[--nowait  (导致注射器在断开连接后立即弹出，而不会等待目标进程结束。)]\n"
-            "[--handshakes  (DLL加载时的握手验证，而不是跳过DLL的握手验证。)]\n"
-            "\n";
+            "[--handshakes  (DLL加载时的握手验证，而不是跳过DLL的握手验证。)]"
+            "\n\n";
             
         // ask whether to generate the usage file; if yes, show usage and create the file
         if (MessageBoxA(nullptr,
-            "是否生成并显示使用说明？(将创建 'Syringe 使用说明.txt')",
+            "是否生成使用说明文件 'Syringe 使用说明.txt'？",
             VersionString,
             MB_YESNO | MB_ICONQUESTION) == IDYES)
         {
-            MessageBoxA(nullptr, szUsageInfo, VersionString, MSG_BOX_INFO);
-
             // create a text file next to the executable: "Syringe 使用说明.txt"
             {
                 WCHAR exePath[MAX_PATH] = {0};
@@ -189,6 +200,9 @@ int Run(const std::vector<std::string>& arguments)
                         }
 
                         CloseHandle(hFile);
+
+                        // open the generated file with the default associated program
+                        ShellExecuteW(nullptr, L"open", outFile.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                     }
                 }
             }

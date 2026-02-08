@@ -29,6 +29,7 @@ inline auto trim(std::string_view string) noexcept
 inline auto parse_command_line(const std::vector<std::string>& arguments)
 {
     static constexpr std::string_view ARGS_FLAG = "--args=";
+    static constexpr std::string_view ARGS_PREFIX = "--args";
 
     struct argument_set
     {
@@ -41,6 +42,7 @@ inline auto parse_command_line(const std::vector<std::string>& arguments)
         throw invalid_command_arguments{};
 
     argument_set ret;
+    bool args_explicit = false;
 
     // First non-flag argument becomes executable name
     bool exe_found = false;
@@ -55,13 +57,39 @@ inline auto parse_command_line(const std::vector<std::string>& arguments)
             continue;
         }
 
-        // game arguments: --args="blob"
+        // game arguments: --args="blob" or extended forms like --args.Name="blob"
         if (arg.starts_with(ARGS_FLAG))
         {
-            // extract after --args=
+            // exact --args= form
             std::string blob = arg.substr(ARGS_FLAG.size());
-            ret.game_arguments = blob;
+            if (!ret.game_arguments.empty()) ret.game_arguments += ' ';
+            ret.game_arguments += blob;
+            args_explicit = true;
             continue;
+        }
+
+        // extended --args.<suffix>=value (allows multiple distinct --args.* entries to be combined)
+        if (arg.size() > ARGS_PREFIX.size() && arg.rfind(ARGS_PREFIX, 0) == 0)
+        {
+            if (args_explicit)
+            {
+                // explicit --args= present; ignore extended --args.* entries
+                continue;
+            }
+            auto const eq = arg.find('=');
+            if (eq != std::string::npos)
+            {
+                std::string blob = arg.substr(eq + 1);
+                // strip surrounding quotes if present
+                if (blob.size() >= 2 && ((blob.front() == '"' && blob.back() == '"') || (blob.front() == '\'' && blob.back() == '\'')))
+                {
+                    blob = blob.substr(1, blob.size() - 2);
+                }
+
+                if (!ret.game_arguments.empty()) ret.game_arguments += ' ';
+                ret.game_arguments += blob;
+                continue;
+            }
         }
 
         // Syringe arguments
