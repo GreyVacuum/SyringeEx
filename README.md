@@ -5,10 +5,12 @@ This fork extends and modernizes the original **Syringe** while maintaining comp
 
 # License
 
-The **entire program** is licensed under **LGPLv3**.  
+The **SyringeEx code in this repository** is licensed under **LGPLv3**.  
 See [`LICENSE`](LICENSE) for details.
 
 The file **[`Syringe.h`](Syringe.h)** is explicitly designated as an **API header**, and may be used under the LGPLv3 interface rules.
+
+This repository also vendors **[Zydis 5.0.0](https://zydis.re/)** and **[Zycore-C 1.5.2](https://github.com/zyantific/zycore-c)** under the **MIT License**.
 
 # Background
 
@@ -110,6 +112,7 @@ void YourDLL::SomeLoadCode()
 
 - `ESPModification` - Adds an ability for DLLs to modify the stack pointer (ESP) across hooks to be able to exit on addresses with a different stack depth than the hook entry point
 - `ZFPreservation` - Indicates that the Zero Flag (ZF) is preserved after hook execution, allowing to hook on conditional instructions
+- `ReladdrInstructionFixup` - Indicates that relative address instructions (JMP, CALL, Jcc) in overwritten code are properly relocated when copied to trampolines, preventing crashes from stale offsets
 
 ## Adding New API Features
 

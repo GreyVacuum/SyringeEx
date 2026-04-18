@@ -78,6 +78,254 @@ DWORD __fastcall SyringeDebugger::RelativeOffset(void const* pFrom, void const* 
     return to - from;
 }
 
+// Resolve relative operands in an encoder request to absolute addresses.
+static void ResolveRelativeOperands(
+    ZydisEncoderRequest& req,
+    ZydisDecodedInstruction const& instruction,
+    ZydisDecodedOperand const* operands,
+    ZyanU64 srcAddr)
+{
+    for (ZyanU8 i = 0; i < req.operand_count; ++i)
+    {
+        if (req.operands[i].type == ZYDIS_OPERAND_TYPE_IMMEDIATE)
+        {
+            ZyanU64 absAddr;
+            if (ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(
+                    &instruction, &operands[i], srcAddr, &absAddr)))
+            {
+                req.operands[i].imm.u = absAddr;
+            }
+        }
+        else if (req.operands[i].type == ZYDIS_OPERAND_TYPE_MEMORY)
+        {
+            ZyanU64 absAddr;
+            if (ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(
+                    &instruction, &operands[i], srcAddr, &absAddr)))
+            {
+                req.operands[i].mem.displacement =
+                    static_cast<ZyanI64>(absAddr);
+            }
+        }
+    }
+}
+
+std::vector<BYTE> SyringeDebugger::RebuildInstructions(
+    BYTE const* bytes, size_t size, DWORD originalAddr, DWORD newAddr)
+{
+    ZydisDecoder decoder;
+    ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_COMPAT_32, ZYDIS_STACK_WIDTH_32);
+
+    // --- Pass 1: decode all instructions and classify relative branches ---
+
+    struct InstructionInfo
+    {
+        size_t srcOffset;       // offset into original bytes
+        ZyanU8 srcLength;       // original instruction length
+        bool intraPrologue;     // relative branch targets within the prologue
+        size_t targetSrcOffset; // source offset of branch target (intra-prologue only)
+        size_t outputSize;      // size in the output buffer
+        size_t outputOffset;    // offset within the output buffer
+        std::optional<ZydisEncoderRequest> encoderReq; // cached encoder request (relative instrs only)
+    };
+
+    std::vector<InstructionInfo> infos;
+    size_t tailOffset = size; // offset of undecoded tail, if any
+
+    {
+        size_t offset = 0;
+        size_t outOff = 0;
+        while (offset < size)
+        {
+            ZydisDecodedInstruction instruction;
+            ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+
+            auto const srcAddr = static_cast<ZyanU64>(originalAddr + offset);
+
+            if (ZYAN_FAILED(ZydisDecoderDecodeFull(
+                    &decoder, bytes + offset, size - offset, &instruction, operands)))
+            {
+                Log::WriteLine(
+                    __FUNCTION__ ": Failed to decode instruction at 0x%08X, "
+                    "copying remaining %u bytes verbatim. This could mean "
+                    "there is a faulty return 0 hook at 0x%08X.",
+                    static_cast<DWORD>(srcAddr), static_cast<unsigned>(size - offset),
+                    originalAddr);
+
+                tailOffset = offset;
+                break;
+            }
+
+            InstructionInfo info{};
+            info.srcOffset = offset;
+            info.srcLength = instruction.length;
+            info.outputSize = instruction.length; // default fallback
+            info.intraPrologue = false;
+            info.targetSrcOffset = 0;
+
+            if (instruction.attributes & ZYDIS_ATTRIB_IS_RELATIVE)
+            {
+                // Only Jcc, JMP, and CALL have near (rel32) forms.
+                // LOOP/LOOPE/LOOPNE/JCXZ/JECXZ/JRCXZ are rel8-only but
+                // Zydis classifies them as COND_BR, so we must exclude
+                // them by mnemonic.
+                auto const cat = instruction.meta.category;
+                auto const mn = instruction.mnemonic;
+                bool const hasNearForm =
+                    (cat == ZYDIS_CATEGORY_COND_BR
+                        || cat == ZYDIS_CATEGORY_UNCOND_BR
+                        || cat == ZYDIS_CATEGORY_CALL)
+                    && mn != ZYDIS_MNEMONIC_LOOP
+                    && mn != ZYDIS_MNEMONIC_LOOPE
+                    && mn != ZYDIS_MNEMONIC_LOOPNE
+                    && mn != ZYDIS_MNEMONIC_JCXZ
+                    && mn != ZYDIS_MNEMONIC_JECXZ
+                    && mn != ZYDIS_MNEMONIC_JRCXZ;
+
+                // Find the immediate operand and resolve its absolute target.
+                for (ZyanU8 i = 0; i < instruction.operand_count_visible; ++i)
+                {
+                    if (operands[i].type == ZYDIS_OPERAND_TYPE_IMMEDIATE)
+                    {
+                        ZyanU64 absAddr;
+                        if (ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(
+                                &instruction, &operands[i], srcAddr, &absAddr)))
+                        {
+                            // Check if target falls within the prologue.
+                            if (absAddr >= originalAddr
+                                && absAddr < originalAddr + size)
+                            {
+                                if (hasNearForm)
+                                {
+                                    info.intraPrologue = true;
+                                    info.targetSrcOffset =
+                                        static_cast<size_t>(absAddr - originalAddr);
+                                }
+                                else
+                                {
+                                    Log::WriteLine(
+                                        __FUNCTION__ ": Relative instruction "
+                                        "at 0x%08X has an intra-prologue target "
+                                        "but no near encoding. Hook at 0x%08X "
+                                        "may not work correctly.",
+                                        static_cast<DWORD>(srcAddr),
+                                        originalAddr);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+
+                // Build and cache the encoder request for pass 2.
+                ZydisEncoderRequest req;
+                if (!ZYAN_FAILED(ZydisEncoderDecodedInstructionToEncoderRequest(
+                        &instruction, operands,
+                        instruction.operand_count_visible, &req)))
+                {
+                    ResolveRelativeOperands(
+                        req, instruction, operands, srcAddr);
+
+                    if (hasNearForm)
+                    {
+                        // Force near encoding so output size is deterministic
+                        // regardless of the final destination address.
+                        req.branch_type = ZYDIS_BRANCH_TYPE_NEAR;
+                        req.branch_width = ZYDIS_BRANCH_WIDTH_32;
+                    }
+
+                    info.encoderReq = req;
+
+                    if (hasNearForm)
+                    {
+                        // 6 bytes for Jcc near (0F 8x rel32), 5 bytes for JMP/CALL (E9/E8 rel32).
+                        info.outputSize = (instruction.meta.category == ZYDIS_CATEGORY_COND_BR)
+                            ? 6u : 5u;
+                    }
+                }
+            }
+
+            info.outputOffset = outOff;
+            outOff += info.outputSize;
+
+            infos.push_back(info);
+            offset += instruction.length;
+        }
+    }
+
+    // --- Pass 2: emit relocated instructions ---
+
+    std::vector<BYTE> result;
+    result.reserve(size * 2);
+
+    for (size_t idx = 0; idx < infos.size(); ++idx)
+    {
+        auto const& info = infos[idx];
+        auto const srcAddr = static_cast<ZyanU64>(originalAddr + info.srcOffset);
+        auto const dstAddr = static_cast<ZyanU64>(newAddr + result.size());
+
+        if (!info.encoderReq)
+        {
+            result.insert(result.end(),
+                bytes + info.srcOffset,
+                bytes + info.srcOffset + info.srcLength);
+            continue;
+        }
+
+        auto req = *info.encoderReq;
+
+        if (info.intraPrologue)
+        {
+            // Map the immediate target to its relocated output offset.
+            for (ZyanU8 i = 0; i < req.operand_count; ++i)
+            {
+                // For jumps within the prologue, find the instruction to which
+                // the jump is, and substitute its new shifted absolute address
+                if (req.operands[i].type == ZYDIS_OPERAND_TYPE_IMMEDIATE)
+                {
+                    for (size_t j = 0; j < infos.size(); ++j)
+                    {
+                        if (infos[j].srcOffset == info.targetSrcOffset)
+                        {
+                            req.operands[i].imm.u = static_cast<ZyanU64>(
+                                newAddr + infos[j].outputOffset);
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        BYTE encoded[ZYDIS_MAX_INSTRUCTION_LENGTH];
+        ZyanUSize encodedLen = sizeof(encoded);
+
+        if (ZYAN_FAILED(ZydisEncoderEncodeInstructionAbsolute(
+                &req, encoded, &encodedLen, dstAddr)))
+        {
+            Log::WriteLine(
+                __FUNCTION__ ": Failed to re-encode instruction at 0x%08X, "
+                "copying %u bytes verbatim. This could mean there is a "
+                "faulty return 0 hook at 0x%08X.",
+                static_cast<DWORD>(srcAddr), info.srcLength,
+                originalAddr);
+
+            result.insert(result.end(),
+                bytes + info.srcOffset,
+                bytes + info.srcOffset + info.srcLength);
+        }
+        else
+        {
+            result.insert(result.end(), encoded, encoded + encodedLen);
+        }
+    }
+
+    // Append any undecoded tail bytes verbatim.
+    if (tailOffset < size)
+        result.insert(result.end(), bytes + tailOffset, bytes + size);
+
+    return result;
+}
+
 DWORD SyringeDebugger::HandleException(DEBUG_EVENT const& dbgEvent)
 {
     auto const exceptCode = dbgEvent.u.Exception.ExceptionRecord.ExceptionCode;
@@ -307,7 +555,15 @@ DWORD SyringeDebugger::HandleException(DEBUG_EVENT const& dbgEvent)
                         continue;
                     }
 
-                    auto const sz = count * sizeof(code_call) + sizeof(jmp_back) + overridden;
+                    // read the overridden bytes from the target process
+                    std::vector<BYTE> original_bytes(overridden);
+                    ReadMem(it.first, original_bytes.data(), overridden);
+
+                    // use a conservative upper bound for rebuilt instructions,
+                    // since relative instruction re-encoding may change sizes
+                    // (e.g. short branch -> near branch)
+                    auto const max_rebuilt = overridden * 3;
+                    auto const sz = count * sizeof(code_call) + sizeof(jmp_back) + max_rebuilt;
 
                     code.resize(sz);
                     auto p_code = code.data();
@@ -331,11 +587,18 @@ DWORD SyringeDebugger::HandleException(DEBUG_EVENT const& dbgEvent)
                         }
                     }
 
-                    // write overridden bytes
+                    // rebuild overridden bytes, adjusting relative addresses
                     if (overridden)
                     {
-                        ReadMem(it.first, p_code, overridden);
-                        p_code += overridden;
+                        auto const originalAddr = reinterpret_cast<DWORD>(it.first);
+                        auto const newAddr = reinterpret_cast<DWORD>(
+                            base + (p_code - code.data()));
+
+                        auto rebuilt = RebuildInstructions(
+                            original_bytes.data(), overridden, originalAddr, newAddr);
+
+                        std::memcpy(p_code, rebuilt.data(), rebuilt.size());
+                        p_code += rebuilt.size();
                     }
 
                     // write the jump back
@@ -344,8 +607,10 @@ DWORD SyringeDebugger::HandleException(DEBUG_EVENT const& dbgEvent)
                         static_cast<BYTE*>(it.first) + 0x05);
                     ApplyPatch(p_code, jmp_back);
                     ApplyPatch(p_code + 0x01, rel);
+                    p_code += sizeof(jmp_back);
 
-                    PatchMem(base, code.data(), code.size());
+                    auto const actual_sz = static_cast<size_t>(p_code - code.data());
+                    PatchMem(base, code.data(), actual_sz);
 
                     // dump
                     /*
